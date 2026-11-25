@@ -1,0 +1,109 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Alert on every use of the BreakGlassAdmin role.
+  Deploy in each member account that holds the role, in us-east-1. Creates an
+  SNS topic, an email subscription and an EventBridge rule on CloudTrail
+  AssumeRole events. Standalone: it is not part of the project stack.
+
+Parameters:
+  AlertEmail:
+    Type: String
+    AllowedPattern: '[^@\s]+@[^@\s]+\.[^@\s]+'
+    ConstraintDescription: must be an email address.
+    Description: >
+      Address that receives the alert. Use a shared mailbox owned by the team
+      that reviews break-glass use. AWS sends a confirmation email first.
+  RoleName:
+    Type: String
+    Default: BreakGlassAdmin
+    Description: Name of the break-glass role to watch.
+
+Resources:
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: breakglass-assume-role-alerts
+      DisplayName: Break-glass role used
+
+  AlertSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # Only EventBridge may publish. Same-account IAM principals are not given
+  # sns:Publish by this policy, and the topic stays private to the account.
+  AlertTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref AlertTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowEventBridgeToPublish
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref AlertTopic
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+              ArnEquals:
+                'aws:SourceArn': !GetAtt AssumeRoleRule.Arn
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: sns:Publish
+            Resource: !Ref AlertTopic
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+
+  # CloudTrail records AssumeRole in the region of the STS endpoint that was
+  # called. This rule sees events in the region where it is deployed. Deploy it
+  # in us-east-1 (the global STS endpoint). The trust policy of the role must
+  # accept only that endpoint (aws:RequestedRegion = us-east-1, see
+  # docs/breakglass-admin-trust.json), or an assume through a regional
+  # endpoint elsewhere is recorded where this rule does not look.
+  AssumeRoleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: breakglass-assume-role
+      Description: The BreakGlassAdmin role was assumed.
+      State: ENABLED
+      EventPattern:
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - sts.amazonaws.com
+          eventName:
+            - AssumeRole
+          requestParameters:
+            roleArn:
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${RoleName}'
+      Targets:
+        - Arn: !Ref AlertTopic
+          Id: BreakGlassAlertTarget
+          InputTransformer:
+            # A call from another account has no userIdentity.arn in this
+            # account's CloudTrail (type AWSAccount); the caller then shows only
+            # as principalId (role id and session name) and accountId. Both are
+            # in the message, so the caller is named for either kind of call.
+            InputPathsMap:
+              who: $.detail.userIdentity.arn
+              principal: $.detail.userIdentity.principalId
+              account: $.detail.userIdentity.accountId
+              ip: $.detail.sourceIPAddress
+              time: $.time
+              session: $.detail.requestParameters.roleSessionName
+            InputTemplate: >-
+              "Break-glass role used: assumed by <who> (principal <principal>, account <account>), session <session>, from <ip> at <time>"
+
+Outputs:
+  AlertTopicArn:
+    Description: Topic that receives the break-glass alert.
+    Value: !Ref AlertTopic

@@ -1,0 +1,22 @@
+{
+  "credits": [
+    {
+      "creditId": "19000000003",
+      "accountId": "111111111111",
+      "creditType": "Promotion",
+      "initialAmount": {"currencyCode": "USD", "currencyAmount": "5000.000000"},
+      "remainingAmount": {"currencyCode": "USD", "currencyAmount": "5000.000000"},
+      "estimatedAmount": {"currencyCode": "USD", "currencyAmount": "5000.000000"},
+      "applicableProductNames": ["AmazonEC2"],
+      "description": "Paused credit with no cost category ARN (full balance, future endDate)",
+      "startDate": "2025-01-01T00:00:00+00:00",
+      "endDate": "2027-12-31T23:59:59+00:00",
+      "applicationType": "AfterDiscounts",
+      "shareableAccounts": [],
+      "accountHasCreditSharingEnabled": true,
+      "creditConsoleVisibility": "DISPLAY_ALL",
+      "creditSharingType": "DEFAULT",
+      "creditStatus": "DISABLED"
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadCreditsAndIdentity",
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity",
+        "billing:GetCredits",
+        "billing:GetBillingPreferences",
+        "ce:ListCostCategoryDefinitions"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DescribeCostCategories",
+      "Effect": "Allow",
+      "Action": "ce:DescribeCostCategoryDefinition",
+      "Resource": "arn:aws:ce::<ACCOUNT_ID>:costcategory/*"
+    },
+    {
+      "Sid": "ReadOrganizationAccountNames",
+      "Effect": "Allow",
+      "Action": "organizations:ListAccounts",
+      "Resource": "*"
+    },
+    {
+      "Sid": "SnapshotObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::<SNAPSHOT_BUCKET_NAME>/snapshots/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceAccount": "<ACCOUNT_ID>"
+        }
+      }
+    },
+    {
+      "Sid": "SnapshotList",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::<SNAPSHOT_BUCKET_NAME>",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": "snapshots/*"
+        },
+        "StringEquals": {
+          "aws:ResourceAccount": "<ACCOUNT_ID>"
+        }
+      }
+    },
+    {
+      "Sid": "PublishToReportTopic",
+      "Effect": "Allow",
+      "Action": "sns:Publish",
+      "Resource": "arn:aws:sns:<REGION>:<ACCOUNT_ID>:aws-credits-reporter-topic"
+    }
+  ]
+}

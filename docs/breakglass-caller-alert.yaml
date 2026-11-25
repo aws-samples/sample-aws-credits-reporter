@@ -1,0 +1,221 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Alert on use of, and changes to, the BreakGlassCaller role (the role that is
+  allowed to assume BreakGlassAdmin in the member account), and on tampering
+  with this alert. Deploy in the account that holds BreakGlassCaller, in
+  us-east-1. Creates an SNS topic, an email subscription and two EventBridge
+  rules that watch each other. Not part of the project stack.
+
+Parameters:
+  AlertEmail:
+    Type: String
+    AllowedPattern: '[^@\s]+@[^@\s]+\.[^@\s]+'
+    ConstraintDescription: must be an email address.
+    Description: >
+      Address that receives the alert. Use a shared mailbox owned by the team
+      that reviews break-glass use. AWS sends a confirmation email first.
+  RoleName:
+    Type: String
+    Default: BreakGlassCaller
+    Description: Name of the caller role to watch.
+
+Resources:
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: breakglass-caller-alerts
+      DisplayName: Break-glass caller role alert
+
+  AlertSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # Only these two rules may publish, and only over TLS. No other principal is
+  # given sns:Publish by this policy.
+  AlertTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref AlertTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowEventBridgeToPublish
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref AlertTopic
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+              ArnEquals:
+                'aws:SourceArn':
+                  - !GetAtt UseAndTamperRule.Arn
+                  - !GetAtt ChangeRule.Arn
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: sns:Publish
+            Resource: !Ref AlertTopic
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+
+  # Rule 1: the role is assumed, or rule 2 is changed.
+  # CloudTrail records AssumeRole in the region of the STS endpoint that was
+  # called. Deploy this template in us-east-1 (the global STS endpoint). The
+  # trust policy of the role must accept only that endpoint
+  # (aws:RequestedRegion = us-east-1, see docs/breakglass-caller-trust.json),
+  # or an assume through a regional endpoint elsewhere is recorded where this
+  # rule does not look.
+  UseAndTamperRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: breakglass-caller-use
+      Description: BreakGlassCaller was assumed, or the change rule of this alert was altered.
+      State: ENABLED
+      EventPattern:
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          '$or':
+            - eventSource:
+                - sts.amazonaws.com
+              eventName:
+                - AssumeRole
+              requestParameters:
+                roleArn:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${RoleName}'
+            - eventSource:
+                - events.amazonaws.com
+              eventName:
+                - PutRule
+                - DeleteRule
+                - DisableRule
+              requestParameters:
+                name:
+                  - breakglass-caller-change
+            - eventSource:
+                - events.amazonaws.com
+              eventName:
+                - PutTargets
+                - RemoveTargets
+              requestParameters:
+                rule:
+                  - breakglass-caller-change
+      Targets:
+        - Arn: !Ref AlertTopic
+          Id: BreakGlassCallerUseTarget
+          InputTransformer:
+            InputPathsMap:
+              who: $.detail.userIdentity.arn
+              principal: $.detail.userIdentity.principalId
+              account: $.detail.userIdentity.accountId
+              event: $.detail.eventName
+              source: $.detail.eventSource
+              eventid: $.detail.eventID
+              session: $.detail.requestParameters.roleSessionName
+              ip: $.detail.sourceIPAddress
+              time: $.time
+            InputTemplate: >-
+              "Break-glass caller alert: <event> (<source>) by <who> (principal <principal>, account <account>), session <session>, event id <eventid>, from <ip> at <time>"
+
+  # Rule 2: the role is changed, or rule 1, the topic or its subscription, or
+  # this stack is altered.
+  ChangeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: breakglass-caller-change
+      Description: BreakGlassCaller was changed, or this alert was altered.
+      State: ENABLED
+      EventPattern:
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          '$or':
+            - eventSource:
+                - iam.amazonaws.com
+              eventName:
+                - CreateRole
+                - DeleteRole
+                - UpdateRole
+                - UpdateRoleDescription
+                - UpdateAssumeRolePolicy
+                - PutRolePolicy
+                - DeleteRolePolicy
+                - AttachRolePolicy
+                - DetachRolePolicy
+                - PutRolePermissionsBoundary
+                - DeleteRolePermissionsBoundary
+                - TagRole
+                - UntagRole
+              requestParameters:
+                roleName:
+                  - !Ref RoleName
+            - eventSource:
+                - events.amazonaws.com
+              eventName:
+                - PutRule
+                - DeleteRule
+                - DisableRule
+              requestParameters:
+                name:
+                  - breakglass-caller-use
+            - eventSource:
+                - events.amazonaws.com
+              eventName:
+                - PutTargets
+                - RemoveTargets
+              requestParameters:
+                rule:
+                  - breakglass-caller-use
+            - eventSource:
+                - sns.amazonaws.com
+              eventName:
+                - DeleteTopic
+                - SetTopicAttributes
+                - AddPermission
+                - RemovePermission
+              requestParameters:
+                topicArn:
+                  - !Ref AlertTopic
+            - eventSource:
+                - sns.amazonaws.com
+              eventName:
+                - Unsubscribe
+                - SetSubscriptionAttributes
+              requestParameters:
+                subscriptionArn:
+                  - prefix: !Sub '${AlertTopic}:'
+            - eventSource:
+                - cloudformation.amazonaws.com
+              eventName:
+                - DeleteStack
+                - UpdateStack
+              requestParameters:
+                stackName:
+                  - !Ref 'AWS::StackName'
+      Targets:
+        - Arn: !Ref AlertTopic
+          Id: BreakGlassCallerChangeTarget
+          InputTransformer:
+            InputPathsMap:
+              who: $.detail.userIdentity.arn
+              principal: $.detail.userIdentity.principalId
+              account: $.detail.userIdentity.accountId
+              event: $.detail.eventName
+              source: $.detail.eventSource
+              eventid: $.detail.eventID
+              ip: $.detail.sourceIPAddress
+              time: $.time
+            InputTemplate: >-
+              "Break-glass caller alert: <event> (<source>) by <who> (principal <principal>, account <account>), event id <eventid>, from <ip> at <time>"
+
+Outputs:
+  AlertTopicArn:
+    Description: Topic that receives the break-glass caller alert.
+    Value: !Ref AlertTopic

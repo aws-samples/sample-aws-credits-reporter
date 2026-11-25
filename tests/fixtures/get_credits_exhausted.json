@@ -1,0 +1,22 @@
+{
+  "credits": [
+    {
+      "creditId": "credit-exhausted",
+      "accountId": "111111111111",
+      "creditType": "Promotion",
+      "initialAmount": {"currencyCode": "USD", "currencyAmount": "100.000000"},
+      "remainingAmount": {"currencyCode": "USD", "currencyAmount": "0.000000"},
+      "estimatedAmount": {"currencyCode": "USD", "currencyAmount": "0.000000"},
+      "applicableProductNames": ["AmazonEC2"],
+      "description": "Exhausted credit (remaining zero)",
+      "startDate": "2025-06-01T00:00:00+00:00",
+      "endDate": "2027-06-01T00:00:00+00:00",
+      "applicationType": "AfterDiscounts",
+      "shareableAccounts": [],
+      "accountHasCreditSharingEnabled": true,
+      "creditConsoleVisibility": "DISPLAY_ALL",
+      "creditSharingType": "DEFAULT",
+      "creditStatus": "ENABLED"
+    }
+  ]
+}

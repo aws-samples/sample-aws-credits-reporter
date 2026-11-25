@@ -1,0 +1,126 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ProtectBoundaryPolicyFromChange",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreatePolicyVersion",
+        "iam:SetDefaultPolicyVersion",
+        "iam:DeletePolicyVersion",
+        "iam:DeletePolicy"
+      ],
+      "Resource": "arn:aws:iam::*:policy/aws-credits-reporter-runtime-boundary",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": "arn:aws:iam::*:role/BreakGlassAdmin"
+        }
+      }
+    },
+    {
+      "Sid": "ProtectExecutionRoleBoundaryFromRemoval",
+      "Effect": "Deny",
+      "Action": "iam:DeleteRolePermissionsBoundary",
+      "Resource": "arn:aws:iam::*:role/aws-credits-reporter*-role",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": "arn:aws:iam::*:role/BreakGlassAdmin"
+        }
+      }
+    },
+    {
+      "Sid": "ProtectExecutionRoleBoundaryFromSwap",
+      "Effect": "Deny",
+      "Action": "iam:PutRolePermissionsBoundary",
+      "Resource": "arn:aws:iam::*:role/aws-credits-reporter*-role",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": [
+            "arn:aws:iam::*:role/BreakGlassAdmin",
+            "arn:aws:iam::*:role/aws-credits-reporter-cfn-service"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ProtectDeployerAndServiceRoles",
+      "Effect": "Deny",
+      "Action": [
+        "iam:UpdateAssumeRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:DeleteRole",
+        "iam:PutRolePermissionsBoundary",
+        "iam:DeleteRolePermissionsBoundary"
+      ],
+      "Resource": [
+        "arn:aws:iam::*:role/aws-credits-reporter-deployer",
+        "arn:aws:iam::*:role/aws-credits-reporter-cfn-service"
+      ],
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": "arn:aws:iam::*:role/BreakGlassAdmin"
+        }
+      }
+    },
+    {
+      "Sid": "ProtectBreakGlassAlertRule",
+      "Effect": "Deny",
+      "Action": [
+        "events:PutRule",
+        "events:DeleteRule",
+        "events:DisableRule",
+        "events:PutTargets",
+        "events:RemoveTargets"
+      ],
+      "Resource": "arn:aws:events:*:*:rule/breakglass-assume-role",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": "arn:aws:iam::*:role/BreakGlassAdmin"
+        }
+      }
+    },
+    {
+      "Sid": "ProtectBreakGlassAlertTopic",
+      "Effect": "Deny",
+      "Action": [
+        "sns:DeleteTopic",
+        "sns:SetTopicAttributes",
+        "sns:AddPermission",
+        "sns:RemovePermission",
+        "sns:Unsubscribe",
+        "sns:SetSubscriptionAttributes"
+      ],
+      "Resource": "arn:aws:sns:*:*:breakglass-assume-role-alerts*",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": "arn:aws:iam::*:role/BreakGlassAdmin"
+        }
+      }
+    },
+    {
+      "Sid": "ProtectBreakGlassRoleFromCopyOrChange",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:UpdateRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:PutRolePermissionsBoundary",
+        "iam:DeleteRolePermissionsBoundary"
+      ],
+      "Resource": "arn:aws:iam::*:role/BreakGlassAdmin",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": "arn:aws:iam::*:role/BreakGlassAdmin"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "OnlyTheDedicatedCallerRole",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::<PAYER_ACCOUNT_ID>:role/BreakGlassCaller"
+      },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-1"
+        }
+      }
+    }
+  ]
+}

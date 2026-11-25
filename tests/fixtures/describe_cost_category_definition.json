@@ -1,0 +1,25 @@
+{
+  "CostCategory": {
+    "CostCategoryArn": "arn:aws:ce::111111111111:costcategory/11111111-aaaa-bbbb-cccc-000000000010",
+    "EffectiveStart": "2025-01-01T00:00:00Z",
+    "Name": "CreditGroup",
+    "RuleVersion": "CostCategoryExpression.v1",
+    "Rules": [
+      {
+        "Value": "Credit_Rule",
+        "Rule": {
+          "Dimensions": {
+            "Key": "LINKED_ACCOUNT",
+            "Values": ["444444444444", "555555555555"],
+            "MatchOptions": ["EQUALS"]
+          }
+        },
+        "Type": "REGULAR"
+      }
+    ],
+    "ProcessingStatus": [
+      {"Component": "COST_EXPLORER", "Status": "PROCESSING"}
+    ],
+    "DefaultValue": "Unallocated"
+  }
+}

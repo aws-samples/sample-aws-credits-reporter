@@ -1,0 +1,29 @@
+{
+  "CostCategoryReferences": [
+    {
+      "CostCategoryArn": "arn:aws:ce::111111111111:costcategory/11111111-aaaa-bbbb-cccc-000000000001",
+      "Name": "CreditSharingGroups",
+      "EffectiveStart": "2024-01-01T00:00:00Z",
+      "NumberOfRules": 3,
+      "ProcessingStatus": [
+        {"Component": "COST_EXPLORER", "Status": "APPLIED"}
+      ],
+      "Values": ["Platform", "DataScience", "Sandbox"],
+      "DefaultValue": "Unallocated",
+      "SupportedResourceTypes": ["billing:creditsharing"]
+    },
+    {
+      "CostCategoryArn": "arn:aws:ce::111111111111:costcategory/11111111-aaaa-bbbb-cccc-000000000002",
+      "Name": "BusinessUnits",
+      "EffectiveStart": "2023-06-01T00:00:00Z",
+      "NumberOfRules": 5,
+      "ProcessingStatus": [
+        {"Component": "COST_EXPLORER", "Status": "APPLIED"}
+      ],
+      "Values": ["Retail", "Wholesale"],
+      "DefaultValue": "Other",
+      "SupportedResourceTypes": []
+    }
+  ],
+  "NextToken": "page-2-token"
+}

@@ -1,0 +1,22 @@
+{
+  "credits": [
+    {
+      "creditId": "credit-expired-enabled",
+      "accountId": "111111111111",
+      "creditType": "Promotion",
+      "initialAmount": {"currencyCode": "USD", "currencyAmount": "50.000000"},
+      "remainingAmount": {"currencyCode": "USD", "currencyAmount": "17.750000"},
+      "estimatedAmount": {"currencyCode": "USD", "currencyAmount": "17.750000"},
+      "applicableProductNames": ["AmazonCloudWatch"],
+      "description": "Expired credit still marked ENABLED by the API",
+      "startDate": "2025-01-01T00:00:00+00:00",
+      "endDate": "2025-06-30T23:59:59+00:00",
+      "applicationType": "AfterDiscounts",
+      "shareableAccounts": [],
+      "accountHasCreditSharingEnabled": true,
+      "creditConsoleVisibility": "DISPLAY_ALL",
+      "creditSharingType": "DEFAULT",
+      "creditStatus": "ENABLED"
+    }
+  ]
+}

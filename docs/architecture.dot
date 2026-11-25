@@ -1,0 +1,122 @@
+digraph architecture {
+  graph [rankdir=LR, fontname="Helvetica", fontsize=22, labelloc=t, pad=0.4, nodesep=0.45, ranksep=1.0, compound=true, splines=true,
+         label="AWS Credits Reporter: architecture and trust zones"];
+  node  [fontname="Helvetica", fontsize=12, shape=box, style="rounded,filled", fillcolor="#ffffff", color="#444444", margin="0.15,0.08"];
+  edge  [fontname="Helvetica", fontsize=10, color="#555555", arrowsize=0.8];
+
+  subgraph cluster_ops {
+    label="Operator and deployment plane (medium trust)"; style="rounded,filled"; fillcolor="#fff4d6"; color="#d9a400"; fontsize=13;
+    CLI [label="Operator CLI"];
+    DEP [label="Deployer role\n(1 h sessions)"];
+    STG [label="Code staging bucket\n(versioned)", shape=cylinder];
+  }
+
+  subgraph cluster_ctrl {
+    label="AWS control plane"; style="rounded,filled"; fillcolor="#e8f0fe"; color="#4a6fa5"; fontsize=13;
+    CFN [label="CloudFormation"];
+    STS [label="STS"];
+  }
+
+  subgraph cluster_admin {
+    label="Administrator-owned control layer"; style="rounded,filled"; fillcolor="#e3f4e1"; color="#3f8f3a"; fontsize=13;
+    SVC   [label="CloudFormation\nservice role"];
+    GUARD [label="Boundary guardian\nfunction"];
+    GROLE [label="Guardian role"];
+    SCP   [label="Org SCP\n(member account)"];
+  }
+
+  subgraph cluster_bg {
+    label="Break-glass access (outside the project stack)"; style="rounded,filled"; fillcolor="#e3f4e1"; color="#3f8f3a"; fontsize=13;
+    ADM     [label="Administrator role\n(payer account)"];
+    CALLER  [label="BreakGlassCaller role\n(payer account)\nonly sts:AssumeRole"];
+    BGA     [label="BreakGlassAdmin role\n(member account)\nexempt from the SCP"];
+    BGALERT [label="Break-glass alerts\n(rules and topics in\nboth accounts)"];
+  }
+
+  subgraph cluster_runtime {
+    label="Reporter runtime"; style="rounded,filled"; fillcolor="#e3f4e1"; color="#3f8f3a"; fontsize=13;
+    EB   [label="EventBridge\ndaily rule"];
+    FN   [label="Credits reporter Lambda\n(concurrency 1)"];
+    EXE  [label="Execution role\n+ permissions boundary"];
+    LOGS [label="CloudWatch Logs\n(90 days)", shape=cylinder];
+  }
+
+  subgraph cluster_apis {
+    label="AWS billing and organization APIs"; style="rounded,filled"; fillcolor="#e8f0fe"; color="#4a6fa5"; fontsize=13;
+    BILL [label="Billing\nGetCredits"];
+    CE   [label="Cost Explorer\ncost categories"];
+    ORG  [label="Organizations\nListAccounts"];
+  }
+
+  subgraph cluster_snap {
+    label="Snapshot storage"; style="rounded,filled"; fillcolor="#e3f4e1"; color="#3f8f3a"; fontsize=13;
+    SNAP [label="Snapshot bucket\n(versioned, deny-delete policy)", shape=cylinder];
+  }
+
+  subgraph cluster_notify {
+    label="Notification channel (medium trust)"; style="rounded,filled"; fillcolor="#fff4d6"; color="#d9a400"; fontsize=13;
+    TOPIC  [label="SNS report topic"];
+    ALARMT [label="SNS alarm topic"];
+  }
+
+  subgraph cluster_mon {
+    label="Monitoring and audit plane"; style="rounded,filled"; fillcolor="#e3f4e1"; color="#3f8f3a"; fontsize=13;
+    ALARMS [label="CloudWatch alarms\nerrors, throttles, missing run,\nmissing delivery"];
+    RULES  [label="EventBridge change-alert\nand guardian rules"];
+    TRAIL  [label="Snapshot access\naudit trail"];
+    AUDIT  [label="Audit log bucket", shape=cylinder];
+  }
+
+  subgraph cluster_ext {
+    label="External recipients (low trust)"; style="rounded,filled"; fillcolor="#fde7e7"; color="#c0392b"; fontsize=13;
+    MAIL [label="Email subscribers"];
+  }
+
+  // Daily run
+  EB  -> FN   [label="invoke daily"];
+  FN  -> EXE  [label="assumes"];
+  FN  -> BILL;
+  FN  -> CE;
+  FN  -> ORG;
+  FN  -> SNAP [label="PutObject if-none-match,\nread prior snapshots"];
+  FN  -> TOPIC [label="publish report"];
+  FN  -> LOGS;
+  FN  -> ALARMT [style=dashed, label="failed-invocation\ndestination"];
+  TOPIC -> MAIL [label="email"];
+
+  // CLI
+  CLI -> BILL;
+  CLI -> SNAP;
+  CLI -> TOPIC;
+
+  // Deployment
+  DEP -> STS  [label="assumed by named\nadministrator role"];
+  DEP -> STG  [label="zip + S3 checksum"];
+  DEP -> CFN  [label="change set names\nthe service role"];
+  DEP -> SVC  [style=dashed, label="PassRole"];
+  CFN -> SVC  [label="assumes"];
+  CFN -> STG  [label="reads zip by\npinned version"];
+  CFN -> FN   [label="creates function, rules,\nalarms, topics"];
+  CFN -> EXE  [label="creates role only with\napproved boundary"];
+
+  // Monitoring and audit
+  ALARMS -> ALARMT;
+  RULES  -> ALARMT [label="change alerts"];
+  RULES  -> GUARD  [label="boundary change"];
+  GUARD  -> GROLE;
+  GUARD  -> EXE    [label="restore boundary and\ndefault version"];
+  GUARD  -> ALARMT [label="alert"];
+  SNAP   -> TRAIL  [label="S3 data events"];
+  TRAIL  -> AUDIT;
+  ALARMT -> MAIL   [label="email"];
+  SCP    -> EXE    [style=dashed, label="denies boundary and role\nchanges (member accounts)"];
+
+  // Break-glass
+  ADM     -> CALLER  [label="assumes (1 h)"];
+  CALLER  -> BGA     [label="assumes\n(cross-account)"];
+  SCP     -> BGA     [style=dashed, label="exempts"];
+  SCP     -> BGALERT [style=dashed, label="protects rule\nand topic"];
+  CALLER  -> BGALERT [label="use and changes\nalert"];
+  BGA     -> BGALERT [label="every assume\nalerts"];
+  BGALERT -> MAIL    [label="email"];
+}

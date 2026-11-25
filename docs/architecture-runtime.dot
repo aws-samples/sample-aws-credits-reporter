@@ -1,0 +1,64 @@
+digraph runtime {
+  graph [rankdir=LR, fontname="Helvetica", fontsize=22, labelloc=t, pad=0.4, nodesep=0.5, ranksep=1.1, newrank=true,
+         label="AWS Credits Reporter: runtime, notification and monitoring\n(dashed line: failed invocations go to the alarm topic after retries)"];
+  node  [fontname="Helvetica", fontsize=13, shape=box, style="rounded,filled", fillcolor="#ffffff", color="#444444", margin="0.18,0.10"];
+  edge  [fontname="Helvetica", fontsize=11, color="#555555", arrowsize=0.8];
+
+  subgraph cluster_runtime {
+    label="Reporter runtime"; labeljust=l; style="rounded,filled"; fillcolor="#e3f4e1"; color="#3f8f3a"; fontsize=14;
+    EB   [label="EventBridge\ndaily rule"];
+    FN   [label="Credits reporter Lambda\n(reserved concurrency 1)"];
+    EXE  [label="Execution role\n+ permissions boundary"];
+    LOGS [label="CloudWatch Logs\n(90 days)", shape=cylinder];
+  }
+
+  subgraph cluster_apis {
+    label="AWS billing and organization APIs"; labeljust=l; style="rounded,filled"; fillcolor="#e8f0fe"; color="#4a6fa5"; fontsize=14;
+    BILL [label="Billing\nGetCredits"];
+    CE   [label="Cost Explorer\ncost categories"];
+    ORG  [label="Organizations\nListAccounts"];
+  }
+
+  subgraph cluster_snap {
+    label="Snapshot storage"; labeljust=l; style="rounded,filled"; fillcolor="#e3f4e1"; color="#3f8f3a"; fontsize=14;
+    SNAP [label="Snapshot bucket\nversioned, deny-delete policy,\nwrite-once objects", shape=cylinder];
+  }
+
+  subgraph cluster_notify {
+    label="Notification channel (medium trust)"; labeljust=l; style="rounded,filled"; fillcolor="#fff4d6"; color="#d9a400"; fontsize=14;
+    TOPIC  [label="SNS report topic\n(subscribe and publish\nrestricted)"];
+    ALARMT [label="SNS alarm topic\n(publish scoped by SourceArn)"];
+  }
+
+  subgraph cluster_mon {
+    label="Monitoring and audit plane"; labeljust=l; style="rounded,filled"; fillcolor="#e3f4e1"; color="#3f8f3a"; fontsize=14;
+    ALARMS [label="CloudWatch alarms\nerrors, throttles,\nmissing run, missing delivery"];
+    RULES  [label="EventBridge change-alert rules\nfunction, IAM, SNS, S3,\nalarms, trail changes"];
+    TRAIL  [label="Snapshot access\naudit trail"];
+    AUDIT  [label="Audit log bucket\nlog file validation", shape=cylinder];
+  }
+
+  subgraph cluster_ext {
+    label="External recipients (low trust)"; labeljust=l; style="rounded,filled"; fillcolor="#fde7e7"; color="#c0392b"; fontsize=14;
+    MAIL [label="Email subscribers"];
+  }
+
+  { rank=same; BILL; CE; ORG; }
+
+  EB   -> FN    [label=" invoke daily"];
+  FN   -> EXE   [label=" assumes", style=dotted];
+  FN   -> BILL  [label=" read credits"];
+  FN   -> CE;
+  FN   -> ORG;
+  FN   -> SNAP  [label=" write snapshot,\n read prior one"];
+  FN   -> TOPIC [label=" publish report"];
+  FN   -> LOGS;
+  FN   -> ALARMT [style=dashed];
+
+  TOPIC  -> MAIL [label=" email"];
+  ALARMS -> ALARMT;
+  RULES  -> ALARMT [label=" change alerts"];
+  SNAP   -> TRAIL  [label=" S3 data events"];
+  TRAIL  -> AUDIT;
+  ALARMT -> MAIL   [label=" email alerts"];
+}

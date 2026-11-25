@@ -1,0 +1,1319 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AWS Credits Reporter scheduled path, self-contained plain CloudFormation (no SAM
+  transform). Creates the IAM role and least-privilege policy, the Lambda
+  function (code from an S3 zip), a daily EventBridge schedule, the invoke
+  permission, and - optionally - the SNS topic and snapshot S3 bucket. Reuse
+  existing resources by toggling the "Create ..." parameters in the wizard.
+  Deploy with: --capabilities CAPABILITY_NAMED_IAM.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Lambda code (required)
+        Parameters:
+          - CodeS3Bucket
+          - CodeS3Key
+          - CodeS3ObjectVersion
+      - Label:
+          default: Function settings
+        Parameters:
+          - FunctionName
+          - ScheduleExpression
+          - LambdaMemorySize
+          - LambdaTimeout
+      - Label:
+          default: Snapshot S3 bucket
+        Parameters:
+          - CreateSnapshotBucket
+          - SnapshotBucketName
+          - SnapshotPrefix
+          - SnapshotAdminPrincipalPattern
+          - SnapshotNoncurrentRetentionDays
+          - SnapshotObjectLockDays
+      - Label:
+          default: SNS notification topic
+        Parameters:
+          - CreateSnsTopic
+          - SnsTopicName
+          - ExistingTopicArn
+          - TopicManagerPrincipalPattern
+          - PublishRunOutcome
+      - Label:
+          default: Boundary guardian
+        Parameters:
+          - EnableBoundaryGuardian
+          - GuardianRoleArn
+          - ApprovedBoundaryVersion
+      - Label:
+          default: Function log group
+        Parameters:
+          - CreateLogGroup
+          - LogRetentionDays
+      - Label:
+          default: Monitoring
+        Parameters:
+          - CreateMonitoring
+          - EnableSnapshotAuditTrail
+          - AuditLogRetentionDays
+      - Label:
+          default: Execution role permissions boundary
+        Parameters:
+          - PermissionsBoundaryArn
+    ParameterLabels:
+      CodeS3Bucket:
+        default: Code staging bucket (must already exist, same region)
+      CodeS3Key:
+        default: Code zip key
+      CodeS3ObjectVersion:
+        default: Code zip object version (optional)
+      FunctionName:
+        default: Lambda function name
+      ScheduleExpression:
+        default: Daily schedule (cron)
+      LambdaMemorySize:
+        default: Memory (MB)
+      LambdaTimeout:
+        default: Timeout (seconds)
+      CreateSnapshotBucket:
+        default: Create a new snapshot bucket?
+      SnapshotBucketName:
+        default: Snapshot bucket name
+      SnapshotPrefix:
+        default: Snapshot key prefix
+      SnapshotAdminPrincipalPattern:
+        default: Role ARN pattern allowed to write and delete snapshots by hand
+      SnapshotNoncurrentRetentionDays:
+        default: Days to keep superseded snapshot versions
+      SnapshotObjectLockDays:
+        default: Object Lock governance retention in days (0 = off)
+      CreateSnsTopic:
+        default: Create a new SNS topic?
+      SnsTopicName:
+        default: New SNS topic name (when creating)
+      ExistingTopicArn:
+        default: Existing SNS topic ARN (when reusing)
+      TopicManagerPrincipalPattern:
+        default: Role ARN pattern allowed to subscribe to and publish on the topic
+      PublishRunOutcome:
+        default: Publish the run-outcome message for successful runs?
+      EnableBoundaryGuardian:
+        default: Restore the permissions boundary automatically if it is changed?
+      GuardianRoleArn:
+        default: Guardian role ARN (created by an administrator)
+      ApprovedBoundaryVersion:
+        default: Approved version of the boundary policy
+      CreateLogGroup:
+        default: Create the function log group with a retention period?
+      LogRetentionDays:
+        default: Log retention (days)
+      CreateMonitoring:
+        default: Create alarms, a change-alert rule and an alarm topic?
+      EnableSnapshotAuditTrail:
+        default: Log object-level access to the snapshot bucket (dedicated CloudTrail trail)?
+      AuditLogRetentionDays:
+        default: Audit log retention (days)
+      PermissionsBoundaryArn:
+        default: Permissions boundary policy ARN for the execution role
+
+Parameters:
+  CodeS3Bucket:
+    Type: String
+    Description: >
+      Existing S3 bucket (same region as this stack) that holds the packaged
+      Lambda code zip produced by infra/package.sh. This is only a staging
+      location for the code; it is separate from the snapshot bucket below.
+  CodeS3Key:
+    Type: String
+    Default: lambda/aws-credits-reporter.zip
+    Description: S3 key of the packaged Lambda code zip.
+  CodeS3ObjectVersion:
+    Type: String
+    Default: ''
+    Description: >
+      Optional S3 object version of the code zip. Set it (or bump CodeS3Key) so
+      CloudFormation redeploys updated code; AWS::Lambda::Function otherwise
+      treats a re-upload to the same key as a no-op. Requires versioning on the
+      staging bucket.
+  FunctionName:
+    Type: String
+    Default: aws-credits-reporter-lambda
+    Description: >
+      Lambda function name. Must start with 'aws-credits-reporter'; the IAM policy
+      scopes CloudWatch Logs to this function's log group.
+    AllowedPattern: 'aws-credits-reporter.*'
+    ConstraintDescription: must start with 'aws-credits-reporter'.
+  ScheduleExpression:
+    Type: String
+    Default: cron(0 8 * * ? *)
+    Description: EventBridge cron for the daily run. Default is 08:00 UTC daily.
+  LambdaMemorySize:
+    Type: Number
+    Default: 1024
+    MinValue: 128
+    MaxValue: 10240
+    Description: Function memory in MB.
+  LambdaTimeout:
+    Type: Number
+    Default: 600
+    MinValue: 3
+    MaxValue: 900
+    Description: Function timeout in seconds.
+  CreateSnapshotBucket:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: >
+      'true' = create a new bucket named below (vanilla account). 'false' =
+      reuse an existing bucket with the name below. S3 bucket names are global,
+      so choose a globally unique name when creating.
+  SnapshotBucketName:
+    Type: String
+    AllowedPattern: '[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]'
+    ConstraintDescription: must be a valid, globally unique S3 bucket name.
+    Description: >
+      Snapshot bucket name (required; no default). S3 bucket names are global,
+      so provide a name you own. Created when "Create a new snapshot bucket?"
+      is true; otherwise it must already exist.
+  SnapshotPrefix:
+    Type: String
+    Default: snapshots/
+    Description: >
+      S3 key prefix for snapshots. The IAM policy and the Lambda are both
+      scoped to this prefix.
+  SnapshotAdminPrincipalPattern:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^arn:aws[a-zA-Z-]*:iam::[0-9]{12}:role/[^*?]{4}.*$'
+    ConstraintDescription: must be empty or an IAM role ARN in a named account whose role name or path starts with at least 4 characters that are not wildcards (* or ?).
+    Description: >
+      Role ARN pattern (wildcards allowed) of the administrators who may delete
+      snapshot objects and who may write snapshots outside the scheduled
+      function, for example when running the CLI. The execution role may always
+      write. Everyone else is denied by the bucket policy. Leave blank to allow
+      only the execution role to write and nobody to delete. Applies only to a
+      bucket this stack creates.
+  SnapshotNoncurrentRetentionDays:
+    Type: Number
+    Default: 365
+    MinValue: 1
+    Description: >
+      Days after which superseded (noncurrent) snapshot versions expire. Applies
+      only to a bucket this stack creates.
+  SnapshotObjectLockDays:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 36500
+    Description: >
+      Object Lock default retention in days (GOVERNANCE mode) for new snapshot
+      versions. 0 turns Object Lock off. While locked, a snapshot version cannot
+      be deleted or overwritten without the s3:BypassGovernanceRetention
+      permission, which also delays emptying the bucket before stack deletion.
+      Applies only to a bucket this stack creates.
+  CreateSnsTopic:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: >
+      'true' = create a new topic named below and use it for both run outcome
+      and report delivery (vanilla account). 'false' = reuse the existing topic
+      ARN below.
+  SnsTopicName:
+    Type: String
+    Default: aws-credits-reporter-topic
+    Description: Name of the SNS topic to create (used only when creating).
+  ExistingTopicArn:
+    Type: String
+    Default: ''
+    Description: >
+      ARN of an existing SNS topic to reuse (used only when "Create a new SNS
+      topic?" is false). Leave blank when creating.
+  PublishRunOutcome:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: >
+      'true' = publish a run-outcome message (JSON) to the topic after every
+      run. 'false' = skip it for successful runs only; the report email is
+      unaffected and failed runs still publish a failure message.
+  TopicManagerPrincipalPattern:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^arn:aws[a-zA-Z-]*:iam::[0-9]{12}:role/[^*?]{4}.*$'
+    ConstraintDescription: must be empty or an IAM role ARN in a named account whose role name or path starts with at least 4 characters that are not wildcards (* or ?).
+    Description: >
+      Role ARN pattern (wildcards allowed, for example
+      arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_Admin_*)
+      of the administrators who may subscribe recipients to, and publish on, the
+      topic this stack creates. The execution role may always publish. Everyone
+      else, including the deployer, is denied sns:Subscribe and sns:Publish by
+      the topic policy. Leave blank to allow only the execution role to publish
+      and nobody to subscribe through IAM. Ignored when reusing an existing topic.
+  EnableBoundaryGuardian:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'false'
+    Description: >
+      'true' = deploy a second small function that restores the permissions
+      boundary of the execution role, and the default version of the boundary
+      policy, when either is changed (hourly sweep and on CloudTrail events).
+      For accounts where an SCP cannot protect the boundary, such as the
+      organization management account. Needs PermissionsBoundaryArn and
+      GuardianRoleArn.
+  GuardianRoleArn:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^arn:aws[a-zA-Z-]*:iam::[0-9]{12}:role/[^*?]{4}.*$'
+    ConstraintDescription: must be empty or an IAM role ARN in a named account whose role name or path starts with at least 4 characters that are not wildcards (* or ?).
+    Description: >
+      Role the guardian function runs as, created by an administrator outside
+      this stack (see docs/guardian-role-policy.json) so that the deployer and
+      the CloudFormation service role cannot edit it. Name it
+      aws-credits-reporter-guardian.
+  ApprovedBoundaryVersion:
+    Type: String
+    Default: v1
+    AllowedPattern: '^v[0-9]+$'
+    ConstraintDescription: must look like v1, v2, v3.
+    Description: >
+      Version of the boundary policy that must stay the default. Policy
+      versions are immutable. To change the boundary on purpose: create the new
+      version without making it default, deploy this parameter, then make it
+      the default.
+  CreateLogGroup:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: >
+      'true' = create the log group /aws/lambda/<FunctionName> with the
+      retention below, and delete it with the stack. 'false' = leave the log
+      group to Lambda, which creates it on first run with no expiry; use this
+      when the group already exists (set its retention yourself with
+      aws logs put-retention-policy).
+  LogRetentionDays:
+    Type: Number
+    Default: 90
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653]
+    Description: Days to keep the function's logs (when the stack creates the log group).
+  CreateMonitoring:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: >
+      'true' = create a second SNS topic (<FunctionName>-alarms), CloudWatch
+      alarms for failed runs and for a missing daily run or report, an
+      EventBridge rule that alerts on privileged changes to this project's
+      Lambda function, IAM roles and policies, SNS topics, buckets, schedule and
+      alarms, and a failure destination for the function. The alarm topic is
+      separate from the report topic so that a broken report topic still alerts.
+      Subscribe recipients to the alarm topic yourself (see the README).
+  EnableSnapshotAuditTrail:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'false'
+    Description: >
+      'true' = create a dedicated CloudTrail trail that records S3 data events
+      (GetObject, PutObject, DeleteObject and similar) for the snapshot prefix,
+      an audit log bucket for it, and, with CreateMonitoring=true, an alert on
+      any access by a principal other than the execution role. The trail logs
+      no management events. Data events cost about 0.10 USD per 100,000 events.
+      The audit log bucket is retained when the stack is deleted.
+  AuditLogRetentionDays:
+    Type: Number
+    Default: 365
+    MinValue: 1
+    Description: Days after which audit log files expire (when the audit trail is enabled).
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^arn:aws[a-zA-Z-]*:iam::[0-9]{12}:policy/.+$'
+    ConstraintDescription: must be empty or an IAM managed policy ARN.
+    Description: >
+      ARN of the IAM managed policy to attach as the permissions boundary of
+      the execution role (for example
+      arn:aws:iam::123456789012:policy/aws-credits-reporter-runtime-boundary).
+      Leave blank for no boundary. A deployer identity restricted by
+      docs/deployer-iam-policy.json can only create the role when this is set
+      to the approved boundary.
+
+Rules:
+  # Reject reusing a topic (CreateSnsTopic=false) with a blank ExistingTopicArn.
+  ExistingTopicArnRequiredWhenReusing:
+    RuleCondition: !Equals [!Ref CreateSnsTopic, 'false']
+    Assertions:
+      - Assert: !Not [!Equals [!Ref ExistingTopicArn, '']]
+        AssertDescription: >
+          ExistingTopicArn must be set when "Create a new SNS topic?" is false.
+
+  GuardianNeedsRoleAndBoundary:
+    RuleCondition: !Equals [!Ref EnableBoundaryGuardian, 'true']
+    Assertions:
+      - Assert: !Not [!Equals [!Ref GuardianRoleArn, '']]
+        AssertDescription: GuardianRoleArn is required when EnableBoundaryGuardian is true.
+      - Assert: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
+        AssertDescription: PermissionsBoundaryArn is required when EnableBoundaryGuardian is true.
+
+Conditions:
+  ShouldCreateBucket: !Equals [!Ref CreateSnapshotBucket, 'true']
+  ShouldCreateTopic: !Equals [!Ref CreateSnsTopic, 'true']
+  HasCodeVersion: !Not [!Equals [!Ref CodeS3ObjectVersion, '']]
+  HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
+  ShouldCreateLogGroup: !Equals [!Ref CreateLogGroup, 'true']
+  ShouldMonitor: !Equals [!Ref CreateMonitoring, 'true']
+  ShouldGuard: !Equals [!Ref EnableBoundaryGuardian, 'true']
+  HasGuardianRole: !Not [!Equals [!Ref GuardianRoleArn, '']]
+  ShouldAudit: !Equals [!Ref EnableSnapshotAuditTrail, 'true']
+  ShouldAuditAndMonitor: !And
+    - !Equals [!Ref EnableSnapshotAuditTrail, 'true']
+    - !Equals [!Ref CreateMonitoring, 'true']
+  HasTopicManager: !Not [!Equals [!Ref TopicManagerPrincipalPattern, '']]
+  HasSnapshotAdmin: !Not [!Equals [!Ref SnapshotAdminPrincipalPattern, '']]
+  HasObjectLock: !Not [!Equals [!Ref SnapshotObjectLockDays, 0]]
+
+Resources:
+
+  # ---- SNS (optional create) ----
+  CreditsTopic:
+    Type: AWS::SNS::Topic
+    Condition: ShouldCreateTopic
+    Properties:
+      TopicName: !Ref SnsTopicName
+      DisplayName: AWS Credits Reporter
+
+  # Topic policy: only the execution role and the named managers may
+  # publish or subscribe; AWS services are not affected.
+  CreditsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Condition: ShouldCreateTopic
+    Properties:
+      Topics:
+        - !Ref CreditsTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenySubscribeExceptManagers
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - sns:Subscribe
+              - sns:AddPermission
+              - sns:RemovePermission
+            Resource: !Ref CreditsTopic
+            Condition:
+              StringNotLike:
+                'aws:PrincipalArn': !If
+                  - HasTopicManager
+                  - !Ref TopicManagerPrincipalPattern
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-credits-reporter-no-such-manager'
+              Bool:
+                'aws:PrincipalIsAWSService': 'false'
+          - Sid: DenyPublishExceptExecutionRoleAndManagers
+            Effect: Deny
+            Principal: '*'
+            Action: sns:Publish
+            Resource: !Ref CreditsTopic
+            Condition:
+              StringNotLike:
+                'aws:PrincipalArn':
+                  - !GetAtt ExecutionRole.Arn
+                  - !If
+                    - HasTopicManager
+                    - !Ref TopicManagerPrincipalPattern
+                    - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-credits-reporter-no-such-manager'
+              Bool:
+                'aws:PrincipalIsAWSService': 'false'
+
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: sns:Publish
+            Resource: !Ref CreditsTopic
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+  # ---- Snapshot bucket (optional create) ----
+  SnapshotBucket:
+    Type: AWS::S3::Bucket
+    Condition: ShouldCreateBucket
+    Properties:
+      BucketName: !Ref SnapshotBucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      # Keep every snapshot version, expire superseded
+      # versions only after the retention period, and optionally lock them.
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-noncurrent-snapshot-versions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: !Ref SnapshotNoncurrentRetentionDays
+      ObjectLockEnabled: !If [HasObjectLock, true, !Ref 'AWS::NoValue']
+      ObjectLockConfiguration: !If
+        - HasObjectLock
+        - ObjectLockEnabled: Enabled
+          Rule:
+            DefaultRetention:
+              Mode: GOVERNANCE
+              Days: !Ref SnapshotObjectLockDays
+        - !Ref 'AWS::NoValue'
+
+  # ---- Snapshot bucket TLS-only policy ----
+  # Defense in depth: the snapshot bucket (billing data) accepts TLS requests only.
+  SnapshotBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: ShouldCreateBucket
+    Properties:
+      Bucket: !Ref SnapshotBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:s3:::${SnapshotBucketName}'
+              - !Sub 'arn:${AWS::Partition}:s3:::${SnapshotBucketName}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+          # Only the execution role and the named administrators write snapshots.
+          - Sid: DenySnapshotWritesExceptExecutionRoleAndAdmins
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::${SnapshotBucketName}/${SnapshotPrefix}*'
+            Condition:
+              StringNotLike:
+                'aws:PrincipalArn':
+                  - !GetAtt ExecutionRole.Arn
+                  - !If
+                    - HasSnapshotAdmin
+                    - !Ref SnapshotAdminPrincipalPattern
+                    - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-credits-reporter-no-such-admin'
+          # Deleting snapshots or the bucket is an administrator action.
+          - Sid: DenySnapshotDeletesExceptAdmins
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:DeleteObject
+              - s3:DeleteObjectVersion
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::${SnapshotBucketName}/*'
+            Condition:
+              StringNotLike:
+                'aws:PrincipalArn': !If
+                  - HasSnapshotAdmin
+                  - !Ref SnapshotAdminPrincipalPattern
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-credits-reporter-no-such-admin'
+          - Sid: DenyDeleteBucketExceptAdminsAndStackRole
+            Effect: Deny
+            Principal: '*'
+            Action: s3:DeleteBucket
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::${SnapshotBucketName}'
+            Condition:
+              StringNotLike:
+                'aws:PrincipalArn':
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-credits-reporter-cfn-service'
+                  - !If
+                    - HasSnapshotAdmin
+                    - !Ref SnapshotAdminPrincipalPattern
+                    - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-credits-reporter-no-such-admin'
+
+  # ---- IAM execution role + least-privilege inline policy ----
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${FunctionName}-role'
+      PermissionsBoundary: !If
+        - HasPermissionsBoundary
+        - !Ref PermissionsBoundaryArn
+        - !Ref 'AWS::NoValue'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: aws-credits-reporter-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: IdentityAndBillingRead
+                Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
+                  - billing:GetCredits
+                  - billing:GetBillingPreferences
+                  - ce:ListCostCategoryDefinitions
+                Resource: '*'
+              # DescribeCostCategoryDefinition supports resource-level scoping
+              # to cost category ARNs (ListCostCategoryDefinitions does not).
+              - Sid: DescribeCostCategories
+                Effect: Allow
+                Action: ce:DescribeCostCategoryDefinition
+                Resource: !Sub 'arn:${AWS::Partition}:ce::${AWS::AccountId}:costcategory/*'
+              # Best-effort account names; the resolver falls back to account IDs when denied.
+              - Sid: ReadOrganizationAccounts
+                Effect: Allow
+                Action: organizations:ListAccounts
+                Resource: '*'
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${FunctionName}:*'
+              - Sid: SnapshotBucketObjects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${SnapshotBucketName}/${SnapshotPrefix}*'
+                # Only a bucket owned by this account.
+                Condition:
+                  StringEquals:
+                    'aws:ResourceAccount': !Ref 'AWS::AccountId'
+              - Sid: SnapshotBucketList
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${SnapshotBucketName}'
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - !Sub '${SnapshotPrefix}*'
+                  StringEquals:
+                    'aws:ResourceAccount': !Ref 'AWS::AccountId'
+              - Sid: PublishToSnsTopic
+                Effect: Allow
+                Action: sns:Publish
+                Resource: !If
+                  - ShouldCreateTopic
+                  - !Ref CreditsTopic
+                  - !Ref ExistingTopicArn
+              # Lambda publishes failed asynchronous invocations to the alarm
+              # topic with this role.
+              - !If
+                - ShouldMonitor
+                - Sid: PublishFailureDestination
+                  Effect: Allow
+                  Action: sns:Publish
+                  Resource: !Ref AlarmTopic
+                - !Ref 'AWS::NoValue'
+
+  # ---- Function log group ----
+  # Logs hold exception text and account and credit identifiers, so they get a
+  # retention period instead of living forever.
+  FunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: ShouldCreateLogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${FunctionName}'
+      RetentionInDays: !Ref LogRetentionDays
+
+  # ---- Lambda function ----
+  CreditsBuddyFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref FunctionName
+      Description: AWS Credits Reporter scheduled run (Deployment_Runner).
+      Runtime: python3.12
+      Handler: aws_credits_reporter.lambda_handler.handler
+      Role: !GetAtt ExecutionRole.Arn
+      MemorySize: !Ref LambdaMemorySize
+      Timeout: !Ref LambdaTimeout
+      # Names the log group explicitly. When the stack creates it, the reference
+      # makes the group (and its retention) exist before the first run.
+      LoggingConfig:
+        LogGroup: !If
+          - ShouldCreateLogGroup
+          - !Ref FunctionLogGroup
+          - !Sub '/aws/lambda/${FunctionName}'
+      # One run at a time, so a manual or duplicate
+      # invocation cannot overlap the scheduled run.
+      ReservedConcurrentExecutions: 1
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref CodeS3Key
+        S3ObjectVersion: !If
+          - HasCodeVersion
+          - !Ref CodeS3ObjectVersion
+          - !Ref 'AWS::NoValue'
+      Environment:
+        Variables:
+          AWS_CREDITS_REPORTER_BUCKET: !Ref SnapshotBucketName
+          AWS_CREDITS_REPORTER_PREFIX: !Ref SnapshotPrefix
+          AWS_CREDITS_REPORTER_OUTCOME_TOPIC_ARN: !If
+            - ShouldCreateTopic
+            - !Ref CreditsTopic
+            - !Ref ExistingTopicArn
+          AWS_CREDITS_REPORTER_SNS_TOPIC_ARN: !If
+            - ShouldCreateTopic
+            - !Ref CreditsTopic
+            - !Ref ExistingTopicArn
+          AWS_CREDITS_REPORTER_PUBLISH_OUTCOME: !Ref PublishRunOutcome
+          AWS_CREDITS_REPORTER_EXPECTED_BUCKET_OWNER: !Ref 'AWS::AccountId'
+
+  CreditsBuddyInvokeConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref CreditsBuddyFunction
+      Qualifier: $LATEST
+      MaximumRetryAttempts: 2
+      DestinationConfig: !If
+        - ShouldMonitor
+        - OnFailure:
+            Destination: !Ref AlarmTopic
+        - !Ref 'AWS::NoValue'
+
+  DailyScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${FunctionName}-daily'
+      Description: Invoke AWS Credits Reporter once per calendar day.
+      ScheduleExpression: !Ref ScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt CreditsBuddyFunction.Arn
+          Id: CreditsBuddyDailyTarget
+          RetryPolicy:
+            MaximumRetryAttempts: 3
+
+  ScheduleInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CreditsBuddyFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt DailyScheduleRule.Arn
+
+  # ---- Monitoring ----
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Condition: ShouldMonitor
+    Properties:
+      TopicName: !Sub '${FunctionName}-alarms'
+      DisplayName: AWS Credits Reporter alarms
+
+  # CloudWatch and EventBridge publish as services, the execution role publishes
+  # failed-invocation records; everyone else is denied.
+  AlarmTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Condition: ShouldMonitor
+    Properties:
+      Topics:
+        - !Ref AlarmTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowAlarmsAndRulesToPublish
+            Effect: Allow
+            Principal:
+              Service:
+                - cloudwatch.amazonaws.com
+                - events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref AlarmTopic
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+              ArnLike:
+                'aws:SourceArn':
+                  - !Sub 'arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${FunctionName}-changes-*'
+                  - !Sub 'arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${FunctionName}-*'
+          - Sid: DenySubscribeExceptManagers
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - sns:Subscribe
+              - sns:AddPermission
+              - sns:RemovePermission
+            Resource: !Ref AlarmTopic
+            Condition:
+              StringNotLike:
+                'aws:PrincipalArn': !If
+                  - HasTopicManager
+                  - !Ref TopicManagerPrincipalPattern
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-credits-reporter-no-such-manager'
+              Bool:
+                'aws:PrincipalIsAWSService': 'false'
+          - Sid: DenyPublishExceptExecutionRoleAndManagers
+            Effect: Deny
+            Principal: '*'
+            Action: sns:Publish
+            Resource: !Ref AlarmTopic
+            Condition:
+              StringNotLike:
+                'aws:PrincipalArn':
+                  - !GetAtt ExecutionRole.Arn
+                  - !If [HasGuardianRole, !Ref GuardianRoleArn, !Ref 'AWS::NoValue']
+                  - !If
+                    - HasTopicManager
+                    - !Ref TopicManagerPrincipalPattern
+                    - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-credits-reporter-no-such-manager'
+              Bool:
+                'aws:PrincipalIsAWSService': 'false'
+
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: sns:Publish
+            Resource: !Ref AlarmTopic
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+  ErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: ShouldMonitor
+    Properties:
+      AlarmName: !Sub '${FunctionName}-errors'
+      AlarmDescription: The scheduled AWS Credits Reporter run failed.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref CreditsBuddyFunction
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  ThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: ShouldMonitor
+    Properties:
+      AlarmName: !Sub '${FunctionName}-throttles'
+      AlarmDescription: >
+        An invocation was rejected because another run was in progress
+        (reserved concurrency is 1).
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref CreditsBuddyFunction
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  # The daily run is missing: no invocation in the last 26 hourly periods
+  # (missing data counts as breaching).
+  MissingRunAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: ShouldMonitor
+    Properties:
+      AlarmName: !Sub '${FunctionName}-missing-run'
+      AlarmDescription: No invocation of the AWS Credits Reporter function in the last 26 hours.
+      Namespace: AWS/Lambda
+      MetricName: Invocations
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref CreditsBuddyFunction
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 26
+      DatapointsToAlarm: 26
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  # No notification was delivered from the report topic in the last 26 hours:
+  # the function could not publish, or a subscription was removed, never
+  # confirmed or given a filter policy that drops the report.
+  MissingReportAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: ShouldMonitor
+    Properties:
+      AlarmName: !Sub '${FunctionName}-missing-report'
+      AlarmDescription: No notification was delivered from the report topic in the last 26 hours.
+      Namespace: AWS/SNS
+      MetricName: NumberOfNotificationsDelivered
+      Dimensions:
+        - Name: TopicName
+          Value: !Select
+            - 5
+            - !Split
+              - ':'
+              - !If
+                - ShouldCreateTopic
+                - !Ref CreditsTopic
+                - !Ref ExistingTopicArn
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 26
+      DatapointsToAlarm: 26
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  # Privileged changes to this project's resources, from CloudTrail management
+  # events on the default bus. Deployments alert too, which is expected.
+  PrivilegedChangeIdentityRule:
+    Type: AWS::Events::Rule
+    Condition: ShouldMonitor
+    Properties:
+      Name: !Sub '${FunctionName}-changes-identity'
+      Description: Alert on privileged changes to the AWS Credits Reporter function, IAM roles and policies, and on any use of the project's roles by a caller that is not an AWS service.
+      State: ENABLED
+      EventPattern:
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          $or:
+            - eventSource: [lambda.amazonaws.com]
+              eventName:
+                - prefix: CreateFunction
+                - prefix: UpdateFunctionCode
+                - prefix: UpdateFunctionConfiguration
+                - prefix: AddPermission
+                - prefix: RemovePermission
+                - prefix: PutFunctionEventInvokeConfig
+                - prefix: UpdateFunctionEventInvokeConfig
+                - prefix: PutFunctionConcurrency
+                - prefix: DeleteFunction
+              requestParameters:
+                functionName:
+                  - wildcard: '*aws-credits-reporter*'
+            - eventSource: [iam.amazonaws.com]
+              eventName:
+                - CreateRole
+                - UpdateAssumeRolePolicy
+                - PutRolePolicy
+                - DeleteRolePolicy
+                - AttachRolePolicy
+                - DetachRolePolicy
+                - PutRolePermissionsBoundary
+                - DeleteRolePermissionsBoundary
+                - CreatePolicyVersion
+                - SetDefaultPolicyVersion
+                - DeletePolicyVersion
+                - DeletePolicy
+                - DeleteRole
+              $or:
+                - requestParameters:
+                    roleName:
+                      - wildcard: 'aws-credits-reporter*'
+                - requestParameters:
+                    policyArn:
+                      - wildcard: '*policy/aws-credits-reporter*'
+            - eventSource: [sts.amazonaws.com]
+              eventName: [AssumeRole]
+              userIdentity:
+                type:
+                  - anything-but: AWSService
+              requestParameters:
+                roleArn:
+                  - wildcard: '*role/aws-credits-reporter*'
+      Targets:
+        - Arn: !Ref AlarmTopic
+          Id: IdentityChangeAlertTarget
+          InputTransformer:
+            InputPathsMap:
+              service: $.detail.eventSource
+              action: $.detail.eventName
+              who: $.detail.userIdentity.arn
+              ip: $.detail.sourceIPAddress
+              code: $.detail.errorCode
+              time: $.time
+              fn: $.detail.requestParameters.functionName
+              role: $.detail.requestParameters.roleName
+              policy: $.detail.requestParameters.policyArn
+              assumed: $.detail.requestParameters.roleArn
+            InputTemplate: >-
+              "AWS Credits Reporter change alert: <service> <action> by <who> from <ip> at <time> on <fn><role><policy><assumed> (error: <code>)"
+
+  PrivilegedChangeResourceRule:
+    Type: AWS::Events::Rule
+    Condition: ShouldMonitor
+    Properties:
+      Name: !Sub '${FunctionName}-changes-resources'
+      Description: Alert on privileged changes to the AWS Credits Reporter topics, buckets, schedule and alarms.
+      State: ENABLED
+      EventPattern:
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          $or:
+            - eventSource: [sns.amazonaws.com]
+              eventName:
+                - Subscribe
+                - Unsubscribe
+                - SetSubscriptionAttributes
+                - SetTopicAttributes
+                - AddPermission
+                - RemovePermission
+                - DeleteTopic
+              $or:
+                - requestParameters:
+                    topicArn:
+                      - wildcard: '*:aws-credits-reporter*'
+                - requestParameters:
+                    subscriptionArn:
+                      - wildcard: '*:aws-credits-reporter*'
+            - eventSource: [s3.amazonaws.com]
+              eventName:
+                - PutBucketPolicy
+                - DeleteBucketPolicy
+                - PutBucketVersioning
+                - PutBucketLifecycle
+                - PutBucketLifecycleConfiguration
+                - PutObjectLockConfiguration
+                - PutBucketAcl
+                - PutBucketPublicAccessBlock
+                - DeleteBucketPublicAccessBlock
+                - DeleteBucketEncryption
+                - DeleteBucket
+              requestParameters:
+                bucketName:
+                  - !Ref SnapshotBucketName
+                  - wildcard: 'aws-credits-reporter*'
+            - eventSource: [events.amazonaws.com]
+              eventName:
+                - DisableRule
+                - DeleteRule
+                - PutRule
+                - PutTargets
+                - RemoveTargets
+              $or:
+                - requestParameters:
+                    name:
+                      - wildcard: '*aws-credits-reporter*'
+                - requestParameters:
+                    rule:
+                      - wildcard: '*aws-credits-reporter*'
+            - eventSource: [monitoring.amazonaws.com]
+              eventName:
+                - PutMetricAlarm
+                - DeleteAlarms
+                - DisableAlarmActions
+              $or:
+                - requestParameters:
+                    alarmNames:
+                      - wildcard: 'aws-credits-reporter*'
+                - requestParameters:
+                    alarmName:
+                      - wildcard: 'aws-credits-reporter*'
+            - eventSource: [cloudtrail.amazonaws.com]
+              eventName:
+                - StopLogging
+                - DeleteTrail
+                - UpdateTrail
+                - PutEventSelectors
+              requestParameters:
+                name:
+                  - wildcard: '*aws-credits-reporter*'
+      Targets:
+        - Arn: !Ref AlarmTopic
+          Id: ResourceChangeAlertTarget
+          InputTransformer:
+            InputPathsMap:
+              service: $.detail.eventSource
+              action: $.detail.eventName
+              who: $.detail.userIdentity.arn
+              ip: $.detail.sourceIPAddress
+              code: $.detail.errorCode
+              time: $.time
+              topic: $.detail.requestParameters.topicArn
+              sub: $.detail.requestParameters.subscriptionArn
+              bucket: $.detail.requestParameters.bucketName
+              name: $.detail.requestParameters.name
+              rule: $.detail.requestParameters.rule
+              alarm: $.detail.requestParameters.alarmName
+              alarms: $.detail.requestParameters.alarmNames
+            InputTemplate: >-
+              "AWS Credits Reporter change alert: <service> <action> by <who> from <ip> at <time> on <topic><sub><bucket><name><rule><alarm><alarms> (error: <code>)"
+
+  # ---- Snapshot access audit trail ----
+  # A dedicated trail with only S3 data events for the snapshot prefix, so reads
+  # of billing snapshots leave an audit record and, with monitoring, an alert.
+  AuditLogBucket:
+    Type: AWS::S3::Bucket
+    Condition: ShouldAudit
+    # No BucketName: CloudFormation generates one, so a retained bucket never blocks a re-create.
+    # Kept when the stack is deleted (audit records), but a failed first create
+    # still cleans it up, so a retry is not blocked by a leftover bucket.
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-audit-logs
+            Status: Enabled
+            ExpirationInDays: !Ref AuditLogRetentionDays
+            NoncurrentVersionExpiration:
+              NoncurrentDays: !Ref AuditLogRetentionDays
+
+  AuditLogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: ShouldAudit
+    Properties:
+      Bucket: !Ref AuditLogBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt AuditLogBucket.Arn
+              - !Sub '${AuditLogBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+          - Sid: AllowTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt AuditLogBucket.Arn
+            Condition:
+              StringEquals:
+                'aws:SourceArn': !Sub 'arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${FunctionName}-snapshot-audit'
+          - Sid: AllowTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${AuditLogBucket.Arn}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                's3:x-amz-acl': bucket-owner-full-control
+                'aws:SourceArn': !Sub 'arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${FunctionName}-snapshot-audit'
+          # Audit records are not deleted by hand, only by the lifecycle rule,
+          # except by the named administrators.
+          - Sid: DenyDeleteExceptAdmins
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:DeleteObject
+              - s3:DeleteObjectVersion
+            Resource: !Sub '${AuditLogBucket.Arn}/*'
+            Condition:
+              StringNotLike:
+                'aws:PrincipalArn': !If
+                  - HasSnapshotAdmin
+                  - !Ref SnapshotAdminPrincipalPattern
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-credits-reporter-no-such-admin'
+
+  SnapshotAuditTrail:
+    Type: AWS::CloudTrail::Trail
+    Condition: ShouldAudit
+    DependsOn: AuditLogBucketPolicy
+    Properties:
+      TrailName: !Sub '${FunctionName}-snapshot-audit'
+      S3BucketName: !Ref AuditLogBucket
+      IsLogging: true
+      IsMultiRegionTrail: false
+      IncludeGlobalServiceEvents: false
+      EnableLogFileValidation: true
+      AdvancedEventSelectors:
+        - Name: snapshot-object-access
+          FieldSelectors:
+            - Field: eventCategory
+              Equals:
+                - Data
+            - Field: resources.type
+              Equals:
+                - 'AWS::S3::Object'
+            - Field: resources.ARN
+              StartsWith:
+                - !Sub 'arn:${AWS::Partition}:s3:::${SnapshotBucketName}/${SnapshotPrefix}'
+
+  # Alerts on snapshot object access by anything other than the execution role.
+  SnapshotAccessRule:
+    Type: AWS::Events::Rule
+    Condition: ShouldAuditAndMonitor
+    Properties:
+      Name: !Sub '${FunctionName}-changes-snapshot'
+      Description: A snapshot object was accessed by a principal other than the execution role.
+      State: ENABLED
+      EventPattern:
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - s3.amazonaws.com
+          eventName:
+            - GetObject
+            - PutObject
+            - DeleteObject
+            - DeleteObjects
+            - CopyObject
+            - RestoreObject
+          requestParameters:
+            bucketName:
+              - !Ref SnapshotBucketName
+          $or:
+            - userIdentity:
+                sessionContext:
+                  sessionIssuer:
+                    arn:
+                      - anything-but:
+                          - !GetAtt ExecutionRole.Arn
+            - userIdentity:
+                type:
+                  - IAMUser
+                  - Root
+      Targets:
+        - Arn: !Ref AlarmTopic
+          Id: SnapshotAccessAlertTarget
+          InputTransformer:
+            InputPathsMap:
+              action: $.detail.eventName
+              who: $.detail.userIdentity.arn
+              key: $.detail.requestParameters.key
+              ip: $.detail.sourceIPAddress
+              code: $.detail.errorCode
+              time: $.time
+            InputTemplate: >-
+              "AWS Credits Reporter snapshot access alert: <action> of <key> by <who> from <ip> at <time> (error: <code>)"
+
+  # ---- Boundary guardian ----
+  # Corrective control for accounts that SCPs cannot protect. Runs the same
+  # code package as a second function with its own, administrator-created role.
+  GuardianFunction:
+    Type: AWS::Lambda::Function
+    Condition: ShouldGuard
+    Properties:
+      FunctionName: !Sub '${FunctionName}-guardian'
+      Description: Restores the permissions boundary of the execution role if it is changed.
+      Runtime: python3.12
+      Handler: aws_credits_reporter.guardian.handler
+      Role: !Ref GuardianRoleArn
+      MemorySize: 128
+      Timeout: 60
+      ReservedConcurrentExecutions: 1
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref CodeS3Key
+        S3ObjectVersion: !If
+          - HasCodeVersion
+          - !Ref CodeS3ObjectVersion
+          - !Ref 'AWS::NoValue'
+      Environment:
+        Variables:
+          BOUNDARY_POLICY_ARN: !Ref PermissionsBoundaryArn
+          APPROVED_BOUNDARY_VERSION: !Ref ApprovedBoundaryVersion
+          EXECUTION_ROLE_NAME: !Ref ExecutionRole
+          ALARM_TOPIC_ARN: !If [ShouldMonitor, !Ref AlarmTopic, '']
+
+  GuardianChangeRule:
+    Type: AWS::Events::Rule
+    Condition: ShouldGuard
+    Properties:
+      Name: !Sub '${FunctionName}-changes-guardian'
+      Description: A change to the permissions boundary or its attachment triggers the guardian.
+      State: ENABLED
+      EventPattern:
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - iam.amazonaws.com
+          $or:
+            - eventName:
+                - CreatePolicyVersion
+                - SetDefaultPolicyVersion
+                - DeletePolicyVersion
+                - DeletePolicy
+              requestParameters:
+                policyArn:
+                  - !Ref PermissionsBoundaryArn
+            - eventName:
+                - PutRolePermissionsBoundary
+                - DeleteRolePermissionsBoundary
+              requestParameters:
+                roleName:
+                  - !Ref ExecutionRole
+      Targets:
+        - Arn: !GetAtt GuardianFunction.Arn
+          Id: GuardianChangeTarget
+
+  GuardianSweepRule:
+    Type: AWS::Events::Rule
+    Condition: ShouldGuard
+    Properties:
+      Name: !Sub '${FunctionName}-changes-guardian-sweep'
+      Description: Hourly check of the permissions boundary, in case an event was missed.
+      ScheduleExpression: rate(1 hour)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt GuardianFunction.Arn
+          Id: GuardianSweepTarget
+
+  GuardianChangePermission:
+    Type: AWS::Lambda::Permission
+    Condition: ShouldGuard
+    Properties:
+      FunctionName: !Ref GuardianFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt GuardianChangeRule.Arn
+
+  GuardianSweepPermission:
+    Type: AWS::Lambda::Permission
+    Condition: ShouldGuard
+    Properties:
+      FunctionName: !Ref GuardianFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt GuardianSweepRule.Arn
+
+Outputs:
+  FunctionArn:
+    Description: ARN of the AWS Credits Reporter Lambda function.
+    Value: !GetAtt CreditsBuddyFunction.Arn
+  ExecutionRoleArn:
+    Description: ARN of the created execution role.
+    Value: !GetAtt ExecutionRole.Arn
+  TopicArn:
+    Description: SNS topic used for outcome and report delivery.
+    Value: !If [ShouldCreateTopic, !Ref CreditsTopic, !Ref ExistingTopicArn]
+  SnapshotBucket:
+    Description: Snapshot bucket name.
+    Value: !Ref SnapshotBucketName
+  AuditLogBucketName:
+    Condition: ShouldAudit
+    Description: Bucket holding the snapshot access audit logs (kept when the stack is deleted).
+    Value: !Ref AuditLogBucket
+  AlarmTopicArn:
+    Condition: ShouldMonitor
+    Description: SNS topic that receives alarms and change alerts. Subscribe recipients to it.
+    Value: !Ref AlarmTopic

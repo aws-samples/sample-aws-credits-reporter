@@ -1,0 +1,9 @@
+{
+  "CostCategoryReferences": [
+    {
+      "CostCategoryArn": "arn:aws:ce::111111111111:costcategory/11111111-aaaa-bbbb-cccc-000000000003",
+      "EffectiveStart": "2025-02-01T00:00:00Z",
+      "Values": ["TeamA"]
+    }
+  ]
+}

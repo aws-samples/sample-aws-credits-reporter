@@ -1,0 +1,3 @@
+# Direct runtime dependency of the Lambda package. Regenerate requirements-lambda.txt
+# after changing this file (see the header of that file).
+boto3>=1.43,<2

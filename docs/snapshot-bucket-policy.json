@@ -1,0 +1,62 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyInsecureTransport",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::<SNAPSHOT_BUCKET_NAME>",
+        "arn:aws:s3:::<SNAPSHOT_BUCKET_NAME>/*"
+      ],
+      "Condition": {
+        "Bool": {
+          "aws:SecureTransport": "false"
+        }
+      }
+    },
+    {
+      "Sid": "DenySnapshotWritesExceptExecutionRoleAndAdmins",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::<SNAPSHOT_BUCKET_NAME>/snapshots/*",
+      "Condition": {
+        "StringNotLike": {
+          "aws:PrincipalArn": [
+            "arn:aws:iam::<ACCOUNT_ID>:role/aws-credits-reporter-lambda-role",
+            "<ADMIN_ROLE_ARN_PATTERN>"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DenySnapshotDeletesExceptAdmins",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": [
+        "s3:DeleteObject",
+        "s3:DeleteObjectVersion"
+      ],
+      "Resource": "arn:aws:s3:::<SNAPSHOT_BUCKET_NAME>/*",
+      "Condition": {
+        "StringNotLike": {
+          "aws:PrincipalArn": "<ADMIN_ROLE_ARN_PATTERN>"
+        }
+      }
+    },
+    {
+      "Sid": "DenyDeleteBucketExceptAdmins",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:DeleteBucket",
+      "Resource": "arn:aws:s3:::<SNAPSHOT_BUCKET_NAME>",
+      "Condition": {
+        "StringNotLike": {
+          "aws:PrincipalArn": "<ADMIN_ROLE_ARN_PATTERN>"
+        }
+      }
+    }
+  ]
+}

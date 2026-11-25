@@ -1,0 +1,22 @@
+{
+  "credits": [
+    {
+      "creditId": "credit-0003",
+      "accountId": "444444444444",
+      "creditType": "PROMOTIONAL",
+      "initialAmount": {"currencyAmount": "2500.00", "currencyCode": "USD"},
+      "remainingAmount": {"currencyAmount": "1234.56", "currencyCode": "USD"},
+      "estimatedAmount": {"currencyAmount": "1200.00", "currencyCode": "USD"},
+      "applicableProductNames": ["Amazon Bedrock"],
+      "description": "Generative AI pilot credit",
+      "startDate": "2024-09-01",
+      "endDate": "2025-08-31",
+      "applicationType": "AUTOMATIC",
+      "shareableAccounts": ["555555555555"],
+      "accountHasCreditSharingEnabled": true,
+      "creditConsoleVisibility": "VISIBLE",
+      "creditSharingType": "COST_CATEGORY",
+      "creditStatus": "ENABLED"
+    }
+  ]
+}

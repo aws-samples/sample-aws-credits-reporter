@@ -1,0 +1,41 @@
+{
+  "credits": [
+    {
+      "creditId": "credit-0001",
+      "accountId": "111111111111",
+      "creditType": "PROMOTIONAL",
+      "initialAmount": {"currencyAmount": "10000.00", "currencyCode": "USD"},
+      "remainingAmount": {"currencyAmount": "7250.50", "currencyCode": "USD"},
+      "estimatedAmount": {"currencyAmount": "7100.25", "currencyCode": "USD"},
+      "applicableProductNames": ["Amazon Elastic Compute Cloud", "Amazon Simple Storage Service"],
+      "description": "Migration Acceleration Program credit",
+      "startDate": "2024-01-15",
+      "endDate": "2025-01-14",
+      "applicationType": "AUTOMATIC",
+      "shareableAccounts": ["222222222222", "333333333333"],
+      "accountHasCreditSharingEnabled": true,
+      "creditConsoleVisibility": "VISIBLE",
+      "creditSharingType": "ACCOUNT",
+      "creditStatus": "ENABLED"
+    },
+    {
+      "creditId": "credit-0002",
+      "accountId": "111111111111",
+      "creditType": "PROMOTIONAL",
+      "initialAmount": {"currencyAmount": "5000.00", "currencyCode": "USD"},
+      "remainingAmount": {"currencyAmount": "0.00", "currencyCode": "USD"},
+      "estimatedAmount": {"currencyAmount": "0.00", "currencyCode": "USD"},
+      "applicableProductNames": ["Amazon Relational Database Service"],
+      "description": "Proof of concept credit",
+      "startDate": "2023-06-01",
+      "endDate": "2024-05-31",
+      "applicationType": "AUTOMATIC",
+      "shareableAccounts": [],
+      "accountHasCreditSharingEnabled": false,
+      "creditConsoleVisibility": "VISIBLE",
+      "creditSharingType": "NONE",
+      "creditStatus": "EXPIRED"
+    }
+  ],
+  "nextToken": "page2-token"
+}

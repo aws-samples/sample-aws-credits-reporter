@@ -1,0 +1,42 @@
+{
+  "credits": [
+    {
+      "creditId": "1900000008X",
+      "accountId": "111111111111",
+      "creditType": "Promotion",
+      "initialAmount": {"currencyCode": "USD", "currencyAmount": "35.000000"},
+      "remainingAmount": {"currencyCode": "USD", "currencyAmount": "35.000000"},
+      "estimatedAmount": {"currencyCode": "USD", "currencyAmount": "35.000000"},
+      "applicableProductNames": ["AmazonCloudWatch"],
+      "description": "Example free trial promotion for monitoring",
+      "startDate": "2026-03-11T17:00:00+00:00",
+      "endDate": "2026-06-11T17:00:00+00:00",
+      "applicationType": "AfterDiscounts",
+      "shareableAccounts": [],
+      "accountHasCreditSharingEnabled": true,
+      "creditConsoleVisibility": "DISPLAY_ALL",
+      "creditSharingType": "DEFAULT",
+      "creditStatus": "ENABLED",
+      "exhaustDate": "2026-05-30T17:00:00+00:00"
+    },
+    {
+      "creditId": "1900000009X",
+      "accountId": "111111111111",
+      "creditType": "Promotion",
+      "initialAmount": {"currencyCode": "USD", "currencyAmount": "0.750000"},
+      "remainingAmount": {"currencyCode": "USD", "currencyAmount": "0.750000"},
+      "estimatedAmount": {"currencyCode": "USD", "currencyAmount": "0.750000"},
+      "applicableProductNames": ["AmazonCloudWatch"],
+      "description": "Example free trial promotion for tracing",
+      "startDate": "2026-03-12T02:00:00+00:00",
+      "endDate": "2026-06-12T02:00:00+00:00",
+      "applicationType": "AfterDiscounts",
+      "shareableAccounts": [],
+      "accountHasCreditSharingEnabled": true,
+      "creditConsoleVisibility": "DISPLAY_ALL",
+      "creditSharingType": "DEFAULT",
+      "creditStatus": "ENABLED",
+      "exhaustDate": "2026-05-30T02:00:00+00:00"
+    }
+  ]
+}

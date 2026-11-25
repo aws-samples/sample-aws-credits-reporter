@@ -1,0 +1,71 @@
+digraph deployment {
+  graph [rankdir=LR, fontname="Helvetica", fontsize=22, labelloc=t, pad=0.4, nodesep=0.5, ranksep=1.1, newrank=true,
+         label="AWS Credits Reporter: deployment and boundary protection"];
+  node  [fontname="Helvetica", fontsize=13, shape=box, style="rounded,filled", fillcolor="#ffffff", color="#444444", margin="0.18,0.10"];
+  edge  [fontname="Helvetica", fontsize=11, color="#555555", arrowsize=0.8];
+
+  subgraph cluster_ops {
+    label="Operator and deployment plane (medium trust)"; labeljust=l; style="rounded,filled"; fillcolor="#fff4d6"; color="#d9a400"; fontsize=14;
+    ADMIN [label="Named administrator role"];
+    DEP   [label="Deployer role\n(least privilege, 1 h sessions)"];
+    STG   [label="Code staging bucket\nversioned, no deletes", shape=cylinder];
+  }
+
+  subgraph cluster_ctrl {
+    label="AWS control plane"; labeljust=l; style="rounded,filled"; fillcolor="#e8f0fe"; color="#4a6fa5"; fontsize=14;
+    STS [label="STS"];
+    CFN [label="CloudFormation\n(stack pinned to the\nzip object version)"];
+  }
+
+  subgraph cluster_admin {
+    label="Administrator-owned control layer"; labeljust=l; style="rounded,filled"; fillcolor="#e3f4e1"; color="#3f8f3a"; fontsize=14;
+    SVC   [label="CloudFormation\nservice role"];
+    GUARD [label="Boundary guardian function"];
+    GROLE [label="Guardian role\n(set default version,\nre-attach boundary only)"];
+    SCP   [label="Org SCP\n(member accounts)"];
+  }
+  subgraph cluster_bg {
+    label="Break-glass access (outside the project stack)"; labeljust=l; style="rounded,filled"; fillcolor="#e3f4e1"; color="#3f8f3a"; fontsize=14;
+    CALLER  [label="BreakGlassCaller role\n(payer account)\nonly sts:AssumeRole"];
+    BGA     [label="BreakGlassAdmin role\n(member account)\nexempt from the SCP"];
+    BGALERT [label="Break-glass alerts\n(rules and topics in\nboth accounts)"];
+  }
+
+  subgraph cluster_runtime {
+    label="Reporter runtime"; labeljust=l; style="rounded,filled"; fillcolor="#e3f4e1"; color="#3f8f3a"; fontsize=14;
+    FN  [label="Credits reporter Lambda"];
+    EXE [label="Execution role\n+ permissions boundary"];
+    BND [label="Boundary policy\n(approved version)"];
+  }
+
+  subgraph cluster_mon {
+    label="Monitoring and audit plane"; labeljust=l; style="rounded,filled"; fillcolor="#e3f4e1"; color="#3f8f3a"; fontsize=14;
+    RULES  [label="EventBridge change-alert\nand guardian rules"];
+    ALARMT [label="SNS alarm topic"];
+  }
+
+  ADMIN -> STS   [label=" assume deployer"];
+  STS   -> DEP   [style=dotted];
+  DEP   -> STG   [label=" upload zip\n S3 checksum"];
+  DEP   -> CFN   [label=" create change set\n naming the service role"];
+  DEP   -> SVC   [style=dashed, label=" PassRole to\n CloudFormation only"];
+  CFN   -> SVC   [label=" assumes"];
+  CFN   -> STG   [label=" read zip by\n pinned version"];
+  CFN   -> FN    [label=" create function,\n rules, alarms, topics"];
+  CFN   -> EXE   [label=" create role only with\n the approved boundary"];
+
+  EXE   -> BND   [label=" capped by", style=dotted];
+  RULES -> GUARD [label=" boundary or\n attachment changed"];
+  GUARD -> GROLE [style=dotted, label=" runs as"];
+  GUARD -> BND   [label=" reset default version"];
+  GUARD -> EXE   [label=" re-attach boundary"];
+  GUARD -> ALARMT [label=" alert"];
+  RULES -> ALARMT [label=" change alerts"];
+  SCP   -> BND   [style=dashed, label=" denies changes"];
+  ADMIN   -> CALLER  [label=" assumes (1 h)"];
+  CALLER  -> BGA     [label=" assumes\n (cross-account)"];
+  SCP     -> BGA     [style=dashed, label=" exempts"];
+  SCP     -> BGALERT [style=dashed, label=" protects rule\n and topic"];
+  CALLER  -> BGALERT [label=" use and changes\n alert"];
+  BGA     -> BGALERT [label=" every assume\n alerts"];
+}

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools==84.2.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aws-credits-reporter"
+version = "0.1.0"
+description = "Self-service FinOps tool for tracking AWS credits across a consolidated billing family"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "boto3>=1.43,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.2.0",
+    "hypothesis==6.170.14",
+    "moto==5.2.5",
+    "pyyaml==6.0.3",
+]
+
+[project.scripts]
+aws-credits-reporter = "aws_credits_reporter.cli:main"
+
+[tool.setuptools]
+packages = ["aws_credits_reporter"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
